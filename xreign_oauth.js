@@ -8,14 +8,14 @@ const X_REDIRECT_URI = `${BASE}/api/auth/x/callback`;
 const UA = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
 const X_PUBLIC_BEARER = 'AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
 
-// Parse accounts.txt (tiap akun dipisah blank line: auth_token\nct0)
+// Parse accounts.txt (format: auth_token\nct0\nauth_token\nct0\n...)
 function parseAccounts() {
-  const raw = fs.readFileSync('accounts.txt', 'utf-8');
-  const blocks = raw.split(/\r?\n\r?\n/).map(b => b.trim()).filter(Boolean);
-  return blocks.map(b => {
-    const lines = b.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-    return { auth_token: lines[0], ct0: lines[1] };
-  });
+  const lines = fs.readFileSync('accounts.txt', 'utf-8').split('\n').map(l => l.trim()).filter(Boolean);
+  const accounts = [];
+  for (let i = 0; i + 1 < lines.length; i += 2) {
+    accounts.push({ auth_token: lines[i], ct0: lines[i + 1] });
+  }
+  return accounts;
 }
 
 // Helper X API request (pakai bearer + cookie)
@@ -81,10 +81,12 @@ async function connectX(account) {
   }
 
   let step1Data;
+  const step1Text = await step1Res.clone().text();
+  console.log('  [Step1] Status: ' + step1Res.status + ', Body: ' + step1Text.substring(0, 300));
   try {
-    step1Data = await step1Res.clone().json();
+    step1Data = JSON.parse(step1Text);
   } catch {
-    throw new Error('Step1: response bukan JSON');
+    throw new Error('Step1: response bukan JSON. Status: ' + step1Res.status + ', Body: ' + step1Text.substring(0, 300));
   }
 
   if (!step1Data || !step1Data.authUrl) {
