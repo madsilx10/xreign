@@ -13,14 +13,14 @@ function generateState() {
   return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
 }
 
-// Generate PKCE code_verifier & code_challenge
+// Generate PKCE code_verifier & code_challenge (sync, bukan async)
 function generatePKCE() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
   let verifier = '';
   for (let i = 0; i < 128; i++) {
     verifier += chars.charAt(Math.floor(Math.random() * chars.length));
   }
-  
+
   const challenge = crypto
     .createHash('sha256')
     .update(verifier)
@@ -28,7 +28,7 @@ function generatePKCE() {
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=/g, '');
-  
+
   return { verifier, challenge };
 }
 
@@ -36,7 +36,7 @@ function generatePKCE() {
 function parseAccounts() {
   const content = fs.readFileSync('accounts.txt', 'utf-8');
   const lines = content.split('\n').filter(l => l.trim());
-  
+
   const accounts = [];
   for (let i = 0; i < lines.length; i += 2) {
     if (i + 1 < lines.length) {
@@ -66,15 +66,17 @@ async function getAuthCode(auth_token, ct0, pkce_challenge, state) {
     headers: {
       'Authorization': `Bearer ${BEARER_TOKEN}`,
       'Cookie': `auth_token=${auth_token}; ct0=${ct0};`,
+      'X-Csrf-Token': ct0, // FIX: header ini wajib ada di GET juga
       'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36'
     }
   });
 
   const text = await response.text();
   console.log(`  [Step1] Status: ${response.status}, Body: ${text.substring(0, 200)}`);
-  
+
   try {
     const data = JSON.parse(text);
+    if (!data.auth_code) throw new Error(`auth_code not found in response: ${text.substring(0, 200)}`);
     return data.auth_code;
   } catch (e) {
     throw new Error(`Step 1 parse error: ${e.message}`);
@@ -101,79 +103,53 @@ async function submitConsent(auth_token, ct0, auth_code, state) {
     redirect: 'manual'
   });
 
-  // Extract Location header (redirect URL dengan final code)
   const location = response.headers.get('location');
-  if (!location) throw new Error('No redirect location in response');
+  if (!location) throw new Error(`No redirect location (status: ${response.status})`);
 
   const url = new URL(location);
   const final_code = url.searchParams.get('code');
   const return_state = url.searchParams.get('state');
 
-  if (!final_code) throw new Error('No code in redirect');
+  if (!final_code) throw new Error('No code in redirect URL');
+
+  // FIX: verify state tidak berubah
+  if (return_state !== state) {
+    throw new Error(`State mismatch! Expected: ${state}, Got: ${return_state}`);
+  }
 
   return { final_code, return_state };
 }
 
-// Step 3: Call xreign callback (auto terjadi, tapi bisa kita simulate)
+// Step 3: Call xreign callback
 async function callCallback(final_code, state) {
   const response = await fetch(
     `https://api.xreign.app/api/auth/x/callback?code=${final_code}&state=${state}`,
-    { method: 'GET' }
+    {
+      method: 'GET',
+      redirect: 'follow' // FIX: ikuti redirect kalau ada
+    }
   );
 
-  return response.status === 200;
+  // FIX: terima 200 atau 201 sebagai sukses
+  return response.ok;
 }
 
-// Prompt untuk pilihan
-async function getUserChoice() {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout
-  });
-
+// Helper: satu prompt readline
+function prompt(question) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   return new Promise(resolve => {
-    console.log('\n=== XREIGN X OAuth Connector ===');
-    console.log('1. Satu akun');
-    console.log('2. Semua akun');
-    console.log('3. Range akun (from - to)\n');
-    
-    rl.question('Pilihan (1/2/3): ', answer => {
+    rl.question(question, answer => {
       rl.close();
       resolve(answer.trim());
     });
   });
 }
 
-// Get account index
-async function getAccountIndex(totalAccounts) {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout
-  });
-
-  return new Promise(resolve => {
-    rl.question(`Pilih akun (1-${totalAccounts}): `, answer => {
-      rl.close();
-      resolve(parseInt(answer) - 1);
-    });
-  });
-}
-
-// Get range
+// FIX: getRange pakai separate prompt calls, bukan nested rl
 async function getRange(totalAccounts) {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout
-  });
-
-  return new Promise(resolve => {
-    rl.question(`From (1-${totalAccounts}): `, from => {
-      rl.question(`To (1-${totalAccounts}): `, to => {
-        rl.close();
-        resolve([parseInt(from) - 1, parseInt(to) - 1]);
-      });
-    });
-  });
+  const from = parseInt(await prompt(`From (1-${totalAccounts}): `)) - 1;
+  const to = parseInt(await prompt(`To (1-${totalAccounts}): `)) - 1;
+  return [from, to];
 }
 
 // Main
@@ -182,11 +158,16 @@ async function main() {
     const accounts = parseAccounts();
     console.log(`\n✓ Loaded ${accounts.length} accounts\n`);
 
-    const choice = await getUserChoice();
+    console.log('=== XREIGN X OAuth Connector ===');
+    console.log('1. Satu akun');
+    console.log('2. Semua akun');
+    console.log('3. Range akun (from - to)\n');
+    const choice = await prompt('Pilihan (1/2/3): ');
+
     let targetAccounts = [];
 
     if (choice === '1') {
-      const idx = await getAccountIndex(accounts.length);
+      const idx = parseInt(await prompt(`Pilih akun (1-${accounts.length}): `)) - 1;
       targetAccounts = [accounts[idx]];
     } else if (choice === '2') {
       targetAccounts = accounts;
@@ -208,7 +189,7 @@ async function main() {
         console.log(`[${idx}/${accounts.length}] Connecting X...`);
 
         const state = generateState();
-        const { challenge, verifier } = await generatePKCE();
+        const { challenge, verifier } = generatePKCE(); // FIX: hapus await, ini sync
 
         // Step 1
         const auth_code = await getAuthCode(account.auth_token, account.ct0, challenge, state);
