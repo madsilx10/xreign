@@ -343,15 +343,7 @@ async function doSpin(token) {
   const balRes = await xReq('GET', '/api/me/balances', token);
   const balData = balRes.data;
   let spinTickets = 0;
-  if (Array.isArray(balData?.balances)) {
-    spinTickets = balData.balances.find(b => b.type === 'SPIN_TICKET')?.amount || 0;
-  } else if (Array.isArray(balData)) {
-    spinTickets = balData.find(b => b.type === 'SPIN_TICKET')?.amount || 0;
-  } else if (balData?.spinTickets !== undefined) {
-    spinTickets = balData.spinTickets;
-  } else {
-    console.log(`  [Spin Tiket] Debug balances: ${JSON.stringify(balData).slice(0, 150)}`);
-  }
+  spinTickets = parseInt(balData?.balances?.SPIN_TICKET?.available || 0);
 
   if (parseInt(spinTickets) > 0) {
     console.log(`  [Spin Tiket] Ada ${spinTickets} tiket`);
@@ -496,11 +488,12 @@ async function runFull(idx, account, tokens) {
   // Daily
   await doDaily(token);
 
-  // Mint Share
-  await doMintShare(token, account);
-
   // Tasks
   await doTasks(token, account);
+
+  // Mint Share (setelah tasks selesai)
+  await sleep(2000);
+  await doMintShare(token, account);
 
   // Spin
   await doSpin(token);
@@ -529,14 +522,14 @@ async function doMintShare(token, account) {
 
   // Ambil username dari /api/me xreign
   const meRes = await xReq('GET', '/api/me', token);
-  const username = meRes.data?.xUsername || meRes.data?.twitterUsername || meRes.data?.twitter?.username || meRes.data?.username;
+  const username = meRes.data?.user?.username;
   if (!username) {
     console.log(`  [Mint Share] Gagal ambil username: ${JSON.stringify(meRes.data).slice(0, 150)}`);
     return;
   }
 
   const randomTweetId = Math.floor(Math.random() * 9e18).toString().padStart(19, '0');
-  const fakeUrl = `https://x.com/${username}/status/${randomTweetId}`;
+  const fakeUrl = `https://x.com/${username}/status/${randomTweetId}?s=20`;
 
   const claimRes = await claimMintShare(token, fakeUrl);
   if (claimRes.status === 200 || claimRes.status === 201) {
