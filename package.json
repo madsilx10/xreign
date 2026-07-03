@@ -1,0 +1,8 @@
+{
+  "name": "xreign-oauth",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node xreign_oauth.js"
+  }
+}
