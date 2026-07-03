@@ -2,233 +2,229 @@ import fs from 'fs';
 import readline from 'readline';
 import crypto from 'crypto';
 
-const X_CLIENT_ID = 'SHIxWlFNNEFTZ2ZONmcyZS00dEI6MTpjaQ';
-const X_REDIRECT_URI = 'https://api.xreign.app/api/auth/x/callback';
-const X_SCOPES = 'users.read tweet.read offline.access';
-const BEARER_TOKEN = 'AAAAAAAAAAAAAAAAAAAANRILgAAAAAAnWzUejRCOuH5E6i8nZz4puTs%3D1Zy7tfk8LF81lUq16cHjhLTyJu4FA33AGWWjCpTnA';
-const CODE_CHALLENGE_METHOD = 'S256';
+const BASE = 'https://api.xreign.app';
+const X_REDIRECT_URI = `${BASE}/api/auth/x/callback`;
 
-// Generate random state
-function generateState() {
-  return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
-}
+const UA = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
+const X_PUBLIC_BEARER = 'AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
 
-// Generate PKCE code_verifier & code_challenge (sync, bukan async)
-function generatePKCE() {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
-  let verifier = '';
-  for (let i = 0; i < 128; i++) {
-    verifier += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-
-  const challenge = crypto
-    .createHash('sha256')
-    .update(verifier)
-    .digest('base64')
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=/g, '');
-
-  return { verifier, challenge };
-}
-
-// Parse accounts.txt
+// Parse accounts.txt (tiap akun dipisah blank line: auth_token\nct0)
 function parseAccounts() {
-  const content = fs.readFileSync('accounts.txt', 'utf-8');
-  const lines = content.split('\n').filter(l => l.trim());
+  const raw = fs.readFileSync('accounts.txt', 'utf-8');
+  const blocks = raw.split(/\r?\n\r?\n/).map(b => b.trim()).filter(Boolean);
+  return blocks.map(b => {
+    const lines = b.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    return { auth_token: lines[0], ct0: lines[1] };
+  });
+}
 
-  const accounts = [];
-  for (let i = 0; i < lines.length; i += 2) {
-    if (i + 1 < lines.length) {
-      accounts.push({
-        auth_token: lines[i].trim(),
-        ct0: lines[i + 1].trim()
+// Helper X API request (pakai bearer + cookie)
+async function xRequest(method, url, { auth_token, ct0 }, opts = {}) {
+  const headers = {
+    'User-Agent': UA,
+    'Cookie': `auth_token=${auth_token}; ct0=${ct0}`,
+    'x-csrf-token': ct0,
+    'Authorization': `Bearer ${X_PUBLIC_BEARER}`,
+    'x-twitter-auth-type': 'OAuth2Session',
+    'x-twitter-active-user': 'yes',
+    'x-twitter-client-language': 'en',
+    'Accept': '*/*',
+    'Accept-Language': 'en-US,en;q=0.9',
+    ...opts.headers,
+  };
+  return fetch(url, { method, headers, body: opts.body, redirect: opts.redirect || 'follow' });
+}
+
+// Connect X OAuth untuk xreign
+async function connectX(account) {
+  const { auth_token, ct0 } = account;
+
+  // Step 1: Minta authUrl dari backend xreign
+  // Backend yang generate state + PKCE, bukan kita
+  const step1Res = await fetch(`${BASE}/api/auth/x`, {
+    headers: { 'User-Agent': UA, 'Accept': 'application/json, text/plain, */*' },
+    redirect: 'manual',
+  });
+
+  // Kumpulkan Set-Cookie dari step1 (dipakai di step4)
+  let setCookies = step1Res.headers.getSetCookie ? step1Res.headers.getSetCookie() : [];
+  let sessionCookie = setCookies.map(c => c.split(';')[0]).join('; ');
+
+  // Ikutin redirect manual kalau ada, sambil kumpulin cookie
+  if (step1Res.status >= 300 && step1Res.status < 400) {
+    let nextUrl = step1Res.headers.get('location');
+    let hops = 0;
+    const collectedCookies = [...setCookies];
+    while (nextUrl && hops < 5) {
+      const resolved = new URL(nextUrl, BASE).toString();
+      const hopRes = await fetch(resolved, {
+        headers: {
+          'User-Agent': UA,
+          'Accept': 'application/json, text/plain, */*',
+          ...(collectedCookies.length ? { Cookie: collectedCookies.map(c => c.split(';')[0]).join('; ') } : {}),
+        },
+        redirect: 'manual',
       });
+      const hopCookies = hopRes.headers.getSetCookie ? hopRes.headers.getSetCookie() : [];
+      collectedCookies.push(...hopCookies);
+      if (hopRes.status >= 300 && hopRes.status < 400) {
+        nextUrl = hopRes.headers.get('location');
+        hops++;
+      } else {
+        nextUrl = null;
+      }
     }
+    setCookies = collectedCookies;
+    sessionCookie = setCookies.map(c => c.split(';')[0]).join('; ');
+  } else if (step1Res.status !== 200) {
+    throw new Error(`Step1 gagal: ${step1Res.status}`);
   }
-  return accounts;
-}
 
-// Step 1: GET authorize endpoint
-async function getAuthCode(auth_token, ct0, pkce_challenge, state) {
-  const params = new URLSearchParams({
-    client_id: X_CLIENT_ID,
-    code_challenge: pkce_challenge,
-    code_challenge_method: CODE_CHALLENGE_METHOD,
-    redirect_uri: X_REDIRECT_URI,
-    response_type: 'code',
-    scope: X_SCOPES,
-    state: state
-  });
-
-  const response = await fetch(`https://x.com/i/api/2/oauth2/authorize?${params}`, {
-    method: 'GET',
-    headers: {
-      'Authorization': `Bearer ${BEARER_TOKEN}`,
-      'Cookie': `auth_token=${auth_token}; ct0=${ct0};`,
-      'X-Csrf-Token': ct0,
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-      'X-Twitter-Active-User': 'yes',
-      'X-Twitter-Auth-Type': 'OAuth2Session',
-      'X-Twitter-Client-Language': 'en',
-      'Referer': 'https://x.com/',
-      'Origin': 'https://x.com',
-      'Accept': '*/*',
-      'Accept-Language': 'en-US,en;q=0.9',
-    }
-  });
-
-  const text = await response.text();
-  console.log(`  [Step1] Status: ${response.status}, Body: ${text.substring(0, 200)}`);
-
+  let step1Data;
   try {
-    const data = JSON.parse(text);
-    if (!data.auth_code) throw new Error(`auth_code not found in response: ${text.substring(0, 200)}`);
-    return data.auth_code;
-  } catch (e) {
-    throw new Error(`Step 1 parse error: ${e.message}`);
-  }
-}
-
-// Step 2: POST authorize (submit consent)
-async function submitConsent(auth_token, ct0, auth_code, state) {
-  const body = new URLSearchParams({
-    approval: 'true',
-    code: auth_code
-  });
-
-  const response = await fetch('https://x.com/i/api/2/oauth2/authorize', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${BEARER_TOKEN}`,
-      'Cookie': `auth_token=${auth_token}; ct0=${ct0};`,
-      'X-Csrf-Token': ct0,
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36'
-    },
-    body: body.toString(),
-    redirect: 'manual'
-  });
-
-  const location = response.headers.get('location');
-  if (!location) throw new Error(`No redirect location (status: ${response.status})`);
-
-  const url = new URL(location);
-  const final_code = url.searchParams.get('code');
-  const return_state = url.searchParams.get('state');
-
-  if (!final_code) throw new Error('No code in redirect URL');
-
-  // FIX: verify state tidak berubah
-  if (return_state !== state) {
-    throw new Error(`State mismatch! Expected: ${state}, Got: ${return_state}`);
+    step1Data = await step1Res.clone().json();
+  } catch {
+    throw new Error('Step1: response bukan JSON');
   }
 
-  return { final_code, return_state };
-}
+  if (!step1Data || !step1Data.authUrl) {
+    throw new Error(`Step1: authUrl tidak ditemukan. Response: ${JSON.stringify(step1Data).slice(0, 200)}`);
+  }
 
-// Step 3: Call xreign callback
-async function callCallback(final_code, state) {
-  const response = await fetch(
-    `https://api.xreign.app/api/auth/x/callback?code=${final_code}&state=${state}`,
+  // Ambil state dari authUrl yang dikasih backend
+  const authorizeUrl = step1Data.authUrl;
+  const authorizeUrlObj = new URL(authorizeUrl);
+  const state = authorizeUrlObj.searchParams.get('state');
+
+  // Step 2: GET ke api.x.com (bukan x.com/i/api) untuk dapet auth_code
+  const apiAuthorizeUrl = authorizeUrl.replace('https://x.com/i/oauth2/authorize', 'https://api.x.com/2/oauth2/authorize');
+  const step2 = await xRequest('GET', apiAuthorizeUrl, { auth_token, ct0 });
+  const step2Text = await step2.text();
+  console.log(`  [Step2] Status: ${step2.status}, Body: ${step2Text.substring(0, 200)}`);
+
+  let approvalCode;
+  try {
+    const j = JSON.parse(step2Text);
+    approvalCode = j.auth_code;
+  } catch {
+    const m = step2Text.match(/"auth_code"\s*:\s*"([^"]+)"/);
+    if (m) approvalCode = m[1];
+  }
+  if (!approvalCode) throw new Error(`Gagal ambil auth_code (status ${step2.status})`);
+
+  // Step 3: POST approve consent
+  const step3 = await xRequest(
+    'POST',
+    'https://x.com/i/api/2/oauth2/authorize',
+    { auth_token, ct0 },
     {
-      method: 'GET',
-      redirect: 'follow' // FIX: ikuti redirect kalau ada
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `approval=true&code=${encodeURIComponent(approvalCode)}`,
+      redirect: 'manual',
     }
   );
+  const step3Text = await step3.text();
+  console.log(`  [Step3] Status: ${step3.status}, Body: ${step3Text.substring(0, 200)}`);
 
-  // FIX: terima 200 atau 201 sebagai sukses
-  return response.ok;
+  let finalRedirect;
+  try {
+    const j = JSON.parse(step3Text);
+    finalRedirect = j.redirect_uri;
+  } catch {}
+
+  // Fallback: ambil dari Location header kalau response-nya redirect
+  if (!finalRedirect) {
+    finalRedirect = step3.headers.get('location');
+  }
+  if (!finalRedirect) throw new Error('Gagal ambil redirect_uri dari step3');
+
+  const finalUrl = new URL(finalRedirect);
+  const finalCode = finalUrl.searchParams.get('code');
+  const finalState = finalUrl.searchParams.get('state');
+
+  if (!finalCode) throw new Error('Tidak ada code di redirect URL');
+
+  // Step 4: Exchange code ke xreign backend
+  const step4Res = await fetch(`${BASE}/api/auth/x`, {
+    method: 'POST',
+    headers: {
+      'User-Agent': UA,
+      'Accept': 'application/json, text/plain, */*',
+      'Content-Type': 'application/json',
+      'Origin': 'https://xreign.app',
+      'Referer': `https://xreign.app/auth/x/callback?state=${finalState}&code=${finalCode}`,
+      ...(sessionCookie ? { Cookie: sessionCookie } : {}),
+    },
+    body: JSON.stringify({
+      code: finalCode,
+      redirectUri: X_REDIRECT_URI,
+      state: finalState || state,
+    }),
+  });
+  const step4Text = await step4Res.text();
+  console.log(`  [Step4] Status: ${step4Res.status}, Body: ${step4Text.substring(0, 200)}`);
+
+  let step4Data;
+  try {
+    step4Data = JSON.parse(step4Text);
+  } catch {
+    const m = step4Text.match(/"(?:access_token|accessToken)"\s*:\s*"([^"]+)"/);
+    if (m) step4Data = { accessToken: m[1] };
+  }
+
+  const accessToken = step4Data && (step4Data.accessToken || step4Data.access_token);
+  if (!accessToken) throw new Error(`Step4: gagal ambil access_token. status=${step4Res.status}`);
+
+  return accessToken;
 }
 
-// Helper: satu prompt readline
+// Helper prompt
 function prompt(question) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   return new Promise(resolve => {
-    rl.question(question, answer => {
-      rl.close();
-      resolve(answer.trim());
-    });
+    rl.question(question, answer => { rl.close(); resolve(answer.trim()); });
   });
-}
-
-// FIX: getRange pakai separate prompt calls, bukan nested rl
-async function getRange(totalAccounts) {
-  const from = parseInt(await prompt(`From (1-${totalAccounts}): `)) - 1;
-  const to = parseInt(await prompt(`To (1-${totalAccounts}): `)) - 1;
-  return [from, to];
 }
 
 // Main
 async function main() {
-  try {
-    const accounts = parseAccounts();
-    console.log(`\n✓ Loaded ${accounts.length} accounts\n`);
+  const accounts = parseAccounts();
+  console.log(`\n✓ Loaded ${accounts.length} accounts\n`);
 
-    console.log('=== XREIGN X OAuth Connector ===');
-    console.log('1. Satu akun');
-    console.log('2. Semua akun');
-    console.log('3. Range akun (from - to)\n');
-    const choice = await prompt('Pilihan (1/2/3): ');
+  console.log('=== XREIGN X OAuth Connector ===');
+  console.log('1. Satu akun');
+  console.log('2. Semua akun');
+  console.log('3. Range akun\n');
+  const choice = await prompt('Pilihan (1/2/3): ');
 
-    let targetAccounts = [];
-
-    if (choice === '1') {
-      const idx = parseInt(await prompt(`Pilih akun (1-${accounts.length}): `)) - 1;
-      targetAccounts = [accounts[idx]];
-    } else if (choice === '2') {
-      targetAccounts = accounts;
-    } else if (choice === '3') {
-      const [from, to] = await getRange(accounts.length);
-      targetAccounts = accounts.slice(from, to + 1);
-    } else {
-      console.log('Invalid choice');
-      process.exit(1);
-    }
-
-    console.log(`\n→ Processing ${targetAccounts.length} account(s)\n`);
-
-    for (let i = 0; i < targetAccounts.length; i++) {
-      const account = targetAccounts[i];
-      const idx = accounts.indexOf(account) + 1;
-
-      try {
-        console.log(`[${idx}/${accounts.length}] Connecting X...`);
-
-        const state = generateState();
-        const { challenge, verifier } = generatePKCE(); // FIX: hapus await, ini sync
-
-        // Step 1
-        const auth_code = await getAuthCode(account.auth_token, account.ct0, challenge, state);
-        console.log(`  ✓ Got auth_code`);
-
-        // Step 2
-        const { final_code, return_state } = await submitConsent(
-          account.auth_token,
-          account.ct0,
-          auth_code,
-          state
-        );
-        console.log(`  ✓ Got final code`);
-
-        // Step 3
-        const success = await callCallback(final_code, return_state);
-        if (success) {
-          console.log(`  ✓ Connected!\n`);
-        } else {
-          console.log(`  ✗ Callback failed\n`);
-        }
-
-      } catch (err) {
-        console.log(`  ✗ Error: ${err.message}\n`);
-      }
-    }
-
-    console.log('Done!');
-  } catch (err) {
-    console.error('Fatal error:', err.message);
-    process.exit(1);
+  let targetIndices = [];
+  if (choice === '1') {
+    const idx = parseInt(await prompt(`Pilih akun (1-${accounts.length}): `)) - 1;
+    targetIndices = [idx];
+  } else if (choice === '2') {
+    targetIndices = accounts.map((_, i) => i);
+  } else if (choice === '3') {
+    const from = parseInt(await prompt(`From (1-${accounts.length}): `)) - 1;
+    const to = parseInt(await prompt(`To (1-${accounts.length}): `)) - 1;
+    targetIndices = Array.from({ length: to - from + 1 }, (_, i) => from + i);
+  } else {
+    console.log('Invalid choice'); process.exit(1);
   }
+
+  console.log(`\n→ Processing ${targetIndices.length} account(s)\n`);
+
+  for (const idx of targetIndices) {
+    const account = accounts[idx];
+    console.log(`[${idx + 1}/${accounts.length}] Connecting X...`);
+    try {
+      const token = await connectX(account);
+      console.log(`  ✓ Connected! Token: ${token.slice(0, 20)}...\n`);
+    } catch (err) {
+      console.log(`  ✗ Error: ${err.message}\n`);
+    }
+  }
+
+  console.log('Done!');
 }
 
 main();
