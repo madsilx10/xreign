@@ -70,8 +70,15 @@ async function getAuthCode(auth_token, ct0, pkce_challenge, state) {
     }
   });
 
-  const data = await response.json();
-  return data.auth_code;
+  const text = await response.text();
+  console.log(`  [Step1] Status: ${response.status}, Body: ${text.substring(0, 200)}`);
+  
+  try {
+    const data = JSON.parse(text);
+    return data.auth_code;
+  } catch (e) {
+    throw new Error(`Step 1 parse error: ${e.message}`);
+  }
 }
 
 // Step 2: POST authorize (submit consent)
