@@ -269,7 +269,7 @@ async function getDaily(token) {
 }
 
 async function claimDaily(token) {
-  return xReq('POST', '/api/me/daily', token, {});
+  return xReq('POST', '/api/me/check-in', token, {});
 }
 
 async function followUnlock(token) {
@@ -306,7 +306,7 @@ async function getWheel(token) {
 
 // ─── Actions ─────────────────────────────────────────────────────────────────
 
-async function doDaily(token, label) {
+async function doDaily(token) {
   const daily = await getDaily(token);
   if (daily.data?.checkIn?.claimedToday) {
     console.log(`  [Daily] Sudah claim hari ini`);
@@ -314,7 +314,10 @@ async function doDaily(token, label) {
   }
   const res = await claimDaily(token);
   if (res.status === 200 || res.status === 201) {
-    console.log(`  [Daily] ✓ Claimed!`);
+    const streak = res.data?.streak;
+    const reign = res.data?.reward?.reign;
+    const tickets = res.data?.reward?.spinTickets;
+    console.log(`  [Daily] ✓ Claimed! Streak: ${streak}, +${reign} REIGN${tickets ? `, +${tickets} tiket` : ''}`);
   } else {
     console.log(`  [Daily] ✗ Gagal: ${JSON.stringify(res.data).slice(0, 100)}`);
   }
@@ -476,17 +479,75 @@ async function runFull(idx, account, tokens) {
     }
   }
 
+  // Tunggu sebentar biar backend xreign detect follow
+  await sleep(3000);
+
   // Follow unlock
   await doFollowUnlock(token);
 
   // Daily
   await doDaily(token);
 
+  // Mint Share
+  await doMintShare(token, account);
+
   // Tasks
   await doTasks(token, account);
 
   // Spin
   await doSpin(token);
+}
+
+// ─── Mint Share ──────────────────────────────────────────────────────────────
+
+async function getMintShare(token) {
+  return xReq('GET', '/api/me/mint-share', token);
+}
+
+async function claimMintShare(token, tweetUrl) {
+  return xReq('POST', '/api/me/mint-share/claim', token, { tweetUrl });
+}
+
+async function doMintShare(token, account) {
+  const res = await getMintShare(token);
+  if (res.status !== 200) {
+    console.log(`  [Mint Share] Gagal fetch: ${JSON.stringify(res.data).slice(0, 80)}`);
+    return;
+  }
+  if (res.data?.claimed) {
+    console.log(`  [Mint Share] Sudah claimed`);
+    return;
+  }
+
+  // Ambil username dari X
+  const meRes = await xTwitterReq('GET',
+    'https://x.com/i/api/graphql/G3KGOASz96M-Qu0nwmGXNg/UserByScreenName?variables=%7B%22screen_name%22%3A%22twitter%22%7D&features=%7B%7D',
+    account
+  );
+  // Ambil username sendiri pake verify_credentials via x.com
+  const meRes2 = await xTwitterReq('GET', 'https://x.com/i/api/1.1/account/verify_credentials.json?skip_status=true', account);
+  const meText = await meRes2.text();
+  let username = null;
+  if (!meText.trim().startsWith('<')) {
+    const meData = JSON.parse(meText);
+    username = meData.screen_name;
+  }
+  if (!username) {
+    console.log(`  [Mint Share] Gagal ambil username, skip`);
+    return;
+  }
+
+  const randomTweetId = Math.floor(Math.random() * 9e18).toString().padStart(19, '0');
+  const fakeUrl = `https://x.com/${username}/status/${randomTweetId}`;
+
+  const claimRes = await claimMintShare(token, fakeUrl);
+  if (claimRes.status === 200 || claimRes.status === 201) {
+    const amount = claimRes.data?.reward?.amount;
+    const type = claimRes.data?.reward?.type;
+    console.log(`  [Mint Share] ✓ Claimed! +${amount} ${type}`);
+  } else {
+    console.log(`  [Mint Share] ✗ ${JSON.stringify(claimRes.data).slice(0, 100)}`);
+  }
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
