@@ -184,32 +184,48 @@ async function connectX(account) {
 
 // ─── Follow X ────────────────────────────────────────────────────────────────
 
-async function followUser(account, targetHandle) {
-  // Ambil userId dari handle dulu
-  const lookupRes = await xTwitterReq('GET',
-    `https://api.x.com/1.1/users/show.json?screen_name=${targetHandle}`,
+async function getUserId(account, screenName) {
+  const variables = JSON.stringify({ screen_name: screenName });
+  const features = JSON.stringify({
+    hidden_profile_likes_enabled: true,
+    hidden_profile_subscriptions_enabled: true,
+    responsive_web_graphql_exclude_directive_enabled: true,
+    verified_phone_label_enabled: false,
+    subscriptions_verification_info_is_identity_verified_enabled: true,
+    subscriptions_verification_info_verified_since_enabled: true,
+    highlights_tweets_tab_ui_enabled: true,
+    responsive_web_twitter_article_notes_tab_enabled: false,
+    creator_subscriptions_tweet_preview_api_enabled: true,
+    responsive_web_graphql_skip_user_profile_image_extensions_enabled: false,
+    responsive_web_graphql_timeline_navigation_enabled: true,
+  });
+  const res = await xTwitterReq('GET',
+    `https://x.com/i/api/graphql/G3KGOASz96M-Qu0nwmGXNg/UserByScreenName?variables=${encodeURIComponent(variables)}&features=${encodeURIComponent(features)}`,
     account
   );
-  const lookupText = await lookupRes.text();
-  console.log(`  [debug lookup] status=${lookupRes.status} body=${lookupText.slice(0,300)}`);
-  if (lookupText.trim().startsWith('<')) throw new Error(`lookup return HTML (status: ${lookupRes.status})`);
-  const userData = JSON.parse(lookupText);
-  if (!userData.id_str) throw new Error(`Gagal lookup user @${targetHandle}: ${JSON.stringify(userData).slice(0,80)}`);
+  const text = await res.text();
+  if (text.trim().startsWith('<')) throw new Error(`CF block (status: ${res.status})`);
+  const data = JSON.parse(text);
+  const userId = data?.data?.user?.result?.rest_id;
+  if (!userId) throw new Error(`Gagal ambil userId @${screenName}: ${JSON.stringify(data).slice(0,100)}`);
+  return userId;
+}
 
-  // Follow
-  const followRes = await xTwitterReq('POST',
-    'https://api.x.com/1.1/friendships/create.json',
+async function followUser(account, targetHandle) {
+  const userId = await getUserId(account, targetHandle);
+  const res = await xTwitterReq('POST',
+    'https://x.com/i/api/1.1/friendships/create.json',
     account,
     {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `user_id=${userData.id_str}&follow=true`,
+      body: `user_id=${userId}&follow=true`,
     }
   );
-  const followText = await followRes.text();
-  if (followText.trim().startsWith('<')) throw new Error(`Token X invalid/expired saat follow (status: ${followRes.status})`);
-  const followData = JSON.parse(followText);
-  const alreadyFollowing = followData.errors?.[0]?.code === 327;
-  return followData.following || alreadyFollowing || followData.relationship?.source?.following;
+  const text = await res.text();
+  if (text.trim().startsWith('<')) throw new Error(`CF block saat follow (status: ${res.status})`);
+  const data = JSON.parse(text);
+  const alreadyFollowing = data.errors?.[0]?.code === 327;
+  return data.following || alreadyFollowing || data.relationship?.source?.following;
 }
 
 
