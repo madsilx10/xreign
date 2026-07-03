@@ -339,11 +339,19 @@ async function doSpin(token) {
     console.log(`  [Spin Daily] Sudah spin hari ini`);
   }
 
-  // Spin pake tiket kalau ada
-  const wheel = await getWheel(token);
-  // cek spin tickets dari balances
+  // Spin pake tiket - ambil dari daily response (reward.spinTickets) atau balances
   const balRes = await xReq('GET', '/api/me/balances', token);
-  const spinTickets = balRes.data?.balances?.find(b => b.type === 'SPIN_TICKET')?.amount || 0;
+  const balData = balRes.data;
+  let spinTickets = 0;
+  if (Array.isArray(balData?.balances)) {
+    spinTickets = balData.balances.find(b => b.type === 'SPIN_TICKET')?.amount || 0;
+  } else if (Array.isArray(balData)) {
+    spinTickets = balData.find(b => b.type === 'SPIN_TICKET')?.amount || 0;
+  } else if (balData?.spinTickets !== undefined) {
+    spinTickets = balData.spinTickets;
+  } else {
+    console.log(`  [Spin Tiket] Debug balances: ${JSON.stringify(balData).slice(0, 150)}`);
+  }
 
   if (parseInt(spinTickets) > 0) {
     console.log(`  [Spin Tiket] Ada ${spinTickets} tiket`);
@@ -519,21 +527,11 @@ async function doMintShare(token, account) {
     return;
   }
 
-  // Ambil username dari X
-  const meRes = await xTwitterReq('GET',
-    'https://x.com/i/api/graphql/G3KGOASz96M-Qu0nwmGXNg/UserByScreenName?variables=%7B%22screen_name%22%3A%22twitter%22%7D&features=%7B%7D',
-    account
-  );
-  // Ambil username sendiri pake verify_credentials via x.com
-  const meRes2 = await xTwitterReq('GET', 'https://x.com/i/api/1.1/account/verify_credentials.json?skip_status=true', account);
-  const meText = await meRes2.text();
-  let username = null;
-  if (!meText.trim().startsWith('<')) {
-    const meData = JSON.parse(meText);
-    username = meData.screen_name;
-  }
+  // Ambil username dari /api/me xreign
+  const meRes = await xReq('GET', '/api/me', token);
+  const username = meRes.data?.xUsername || meRes.data?.twitterUsername || meRes.data?.twitter?.username || meRes.data?.username;
   if (!username) {
-    console.log(`  [Mint Share] Gagal ambil username, skip`);
+    console.log(`  [Mint Share] Gagal ambil username: ${JSON.stringify(meRes.data).slice(0, 150)}`);
     return;
   }
 
