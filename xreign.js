@@ -191,7 +191,8 @@ async function followUser(account, targetHandle) {
     account
   );
   const lookupText = await lookupRes.text();
-  if (lookupText.trim().startsWith('<')) throw new Error(`Token X invalid/expired (status: ${lookupRes.status})`);
+  console.log(`  [debug lookup] status=${lookupRes.status} body=${lookupText.slice(0,300)}`);
+  if (lookupText.trim().startsWith('<')) throw new Error(`lookup return HTML (status: ${lookupRes.status})`);
   const userData = JSON.parse(lookupText);
   if (!userData.id_str) throw new Error(`Gagal lookup user @${targetHandle}: ${JSON.stringify(userData).slice(0,80)}`);
 
