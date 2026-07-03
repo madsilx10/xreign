@@ -105,22 +105,18 @@ async function connectX(account) {
 
   if (!finalCode) throw new Error('Tidak ada code di redirect URL');
 
-  // Step 4: Exchange code ke xreign backend
-  const step4Res = await fetch(`${BASE}/api/auth/x`, {
-    method: 'POST',
+  // Step 4: GET ke callback URL xreign (endpoint yang dikasih di redirect_uri)
+  const callbackUrl = `${BASE}/api/auth/x/callback?code=${encodeURIComponent(finalCode)}&state=${encodeURIComponent(finalState || state)}`;
+  const step4Res = await fetch(callbackUrl, {
+    method: 'GET',
     headers: {
       'User-Agent': UA,
       'Accept': 'application/json, text/plain, */*',
-      'Content-Type': 'application/json',
       'Origin': 'https://xreign.app',
-      'Referer': `https://xreign.app/auth/x/callback?state=${finalState}&code=${finalCode}`,
+      'Referer': `https://xreign.app/`,
       ...(sessionCookie ? { Cookie: sessionCookie } : {}),
     },
-    body: JSON.stringify({
-      code: finalCode,
-      redirectUri: X_REDIRECT_URI,
-      state: finalState || state,
-    }),
+    redirect: 'follow',
   });
   const step4Text = await step4Res.text();
   console.log(`  [Step4] Status: ${step4Res.status}, Body: ${step4Text.substring(0, 200)}`);
