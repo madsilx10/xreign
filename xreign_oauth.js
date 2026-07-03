@@ -119,7 +119,9 @@ async function connectX(account) {
     redirect: 'follow',
   });
   const step4Text = await step4Res.text();
-  console.log(`  [Step4] Status: ${step4Res.status}, Body: ${step4Text.substring(0, 200)}`);
+  console.log(`  [Step4] Status: ${step4Res.status}, URL: ${step4Res.url}`);
+  console.log(`  [Step4] Headers: ${JSON.stringify(Object.fromEntries(step4Res.headers.entries())).substring(0, 400)}`);
+  console.log(`  [Step4] Body: ${step4Text.substring(0, 200)}`);
 
   let step4Data;
   try {
