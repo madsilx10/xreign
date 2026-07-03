@@ -118,21 +118,41 @@ async function connectX(account) {
     },
     redirect: 'manual',
   });
-  const step4Text = await step4Res.text();
-  console.log(`  [Step4] Status: ${step4Res.status}, URL: ${step4Res.url}`);
-  console.log(`  [Step4] Headers: ${JSON.stringify(Object.fromEntries(step4Res.headers.entries())).substring(0, 400)}`);
-  console.log(`  [Step4] Body: ${step4Text.substring(0, 200)}`);
+  const step4Body = await step4Res.text();
+  console.log(`  [Step4] Status: ${step4Res.status}`);
 
-  let step4Data;
-  try {
-    step4Data = JSON.parse(step4Text);
-  } catch {
-    const m = step4Text.match(/"(?:access_token|accessToken)"\s*:\s*"([^"]+)"/);
-    if (m) step4Data = { accessToken: m[1] };
-  }
+  // Backend redirect ke xreign.app/auth/callback?code=JWT_TOKEN
+  // Token ada di query param ?code= di Location header
+  const location4 = step4Res.headers.get('location');
+  if (!location4) throw new Error(`Step4: tidak ada Location header. Body: ${step4Body.substring(0, 200)}`);
 
-  const accessToken = step4Data && (step4Data.accessToken || step4Data.access_token);
-  if (!accessToken) throw new Error(`Step4: gagal ambil access_token. status=${step4Res.status}`);
+  const loc4Url = new URL(location4, BASE);
+  const exchangeCode = loc4Url.searchParams.get('code');
+  if (!exchangeCode) throw new Error(`Step4: tidak ada code di redirect URL: ${location4}`);
+
+  console.log(`  [Step4] Got exchange code: ${exchangeCode.substring(0, 30)}...`);
+
+  // Step 5: Tukar exchange code jadi access token
+  const step5Res = await fetch(`${BASE}/api/auth/exchange`, {
+    method: 'POST',
+    headers: {
+      'User-Agent': UA,
+      'Accept': 'application/json, text/plain, */*',
+      'Content-Type': 'application/json',
+      'Origin': 'https://xreign.app',
+      'Referer': location4,
+      ...(sessionCookie ? { Cookie: sessionCookie } : {}),
+    },
+    body: JSON.stringify({ code: exchangeCode }),
+  });
+  const step5Text = await step5Res.text();
+  console.log(`  [Step5] Status: ${step5Res.status}, Body: ${step5Text.substring(0, 200)}`);
+
+  let step5Data;
+  try { step5Data = JSON.parse(step5Text); } catch {}
+
+  const accessToken = step5Data && (step5Data.accessToken || step5Data.access_token || step5Data.token);
+  if (!accessToken) throw new Error(`Step5: gagal ambil access_token. status=${step5Res.status}, body=${step5Text.substring(0, 200)}`);
 
   return accessToken;
 }
