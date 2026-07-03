@@ -130,31 +130,10 @@ async function connectX(account) {
   const exchangeCode = loc4Url.searchParams.get('code');
   if (!exchangeCode) throw new Error(`Step4: tidak ada code di redirect URL: ${location4}`);
 
-  console.log(`  [Step4] Got exchange code: ${exchangeCode.substring(0, 30)}...`);
+  console.log(`  [Step4] Got access token: ${exchangeCode.substring(0, 30)}...`);
 
-  // Step 5: Tukar exchange code jadi access token
-  const step5Res = await fetch(`${BASE}/api/auth/exchange`, {
-    method: 'POST',
-    headers: {
-      'User-Agent': UA,
-      'Accept': 'application/json, text/plain, */*',
-      'Content-Type': 'application/json',
-      'Origin': 'https://xreign.app',
-      'Referer': location4,
-      ...(sessionCookie ? { Cookie: sessionCookie } : {}),
-    },
-    body: JSON.stringify({ code: exchangeCode }),
-  });
-  const step5Text = await step5Res.text();
-  console.log(`  [Step5] Status: ${step5Res.status}, Body: ${step5Text.substring(0, 200)}`);
-
-  let step5Data;
-  try { step5Data = JSON.parse(step5Text); } catch {}
-
-  const accessToken = step5Data && (step5Data.accessToken || step5Data.access_token || step5Data.token);
-  if (!accessToken) throw new Error(`Step5: gagal ambil access_token. status=${step5Res.status}, body=${step5Text.substring(0, 200)}`);
-
-  return accessToken;
+  // exchangeCode IS the JWT access token
+  return exchangeCode;
 }
 
 // Helper prompt
