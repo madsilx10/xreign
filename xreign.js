@@ -161,8 +161,10 @@ async function connectX(account) {
   });
   const loc4 = step4.headers.get('location');
   if (!loc4) throw new Error('Step4: tidak ada Location header');
-  const exchangeCode = new URL(loc4, BASE).searchParams.get('code');
-  if (!exchangeCode) throw new Error('Step4: tidak ada code di redirect URL');
+  // Aman untuk full URL maupun relative URL
+  const loc4Url = loc4.startsWith('http') ? new URL(loc4) : new URL(loc4, 'https://xreign.app');
+  const exchangeCode = loc4Url.searchParams.get('code');
+  if (!exchangeCode) throw new Error(`Step4: tidak ada code di redirect URL (loc: ${loc4.slice(0, 100)})`);
 
   // Step 5: Complete OAuth, dapet accessToken + refreshToken
   const step5 = await fetch(`${BASE}/api/auth/oauth/complete`, {
@@ -208,11 +210,20 @@ async function followUser(account, targetHandle) {
 }
 
 async function isFollowing(account, targetHandle) {
-  const res = await xTwitterReq('GET',
-    `https://api.x.com/1.1/friendships/show.json?source_screen_name=me&target_screen_name=${targetHandle}`,
+  // Dapetin user_id sendiri dulu dari verify_credentials
+  const meRes = await xTwitterReq('GET',
+    'https://api.x.com/1.1/account/verify_credentials.json',
     account
   );
-  const data = await res.json();
+  const meData = await meRes.json().catch(() => ({}));
+  const myId = meData.id_str;
+  if (!myId) return false;
+
+  const res = await xTwitterReq('GET',
+    `https://api.x.com/1.1/friendships/show.json?source_id=${myId}&target_screen_name=${targetHandle}`,
+    account
+  );
+  const data = await res.json().catch(() => ({}));
   return data.relationship?.source?.following === true;
 }
 
@@ -250,12 +261,8 @@ async function retweetTweet(account, tweetUrl) {
 
 // ─── Xreign API ──────────────────────────────────────────────────────────────
 
-async function getDaily(token) {
-  return xReq('GET', '/api/me/daily', token);
-}
-
 async function claimDaily(token) {
-  return xReq('POST', '/api/me/daily', token, {});
+  return xReq('POST', '/api/me/check-in', token, {});
 }
 
 async function followUnlock(token) {
@@ -282,31 +289,27 @@ async function spinWheel(token, mode) {
   return xReq('POST', '/api/wheel/spin', token, { mode });
 }
 
-async function getWheel(token) {
-  return xReq('GET', '/api/wheel', token);
-}
-
 // ─── Actions ─────────────────────────────────────────────────────────────────
 
-async function doDaily(token, label) {
-  const daily = await getDaily(token);
-  if (daily.data?.checkIn?.claimedToday) {
-    console.log(`  [Daily] Sudah claim hari ini`);
-    return;
-  }
-  const res = await claimDaily(token);
+async function doDaily(token) {
+  const res = await checkIn(token);
   if (res.status === 200 || res.status === 201) {
-    console.log(`  [Daily] ✓ Claimed!`);
+    const reward = res.data?.reward;
+    const streak = res.data?.streak;
+    console.log(`  [Daily] ✓ Check-in! Streak: ${streak}, +${reward?.reign} REIGN`);
+  } else if (res.status === 409) {
+    console.log(`  [Daily] Sudah check-in hari ini`);
   } else {
     console.log(`  [Daily] ✗ Gagal: ${JSON.stringify(res.data).slice(0, 100)}`);
   }
 }
 
 async function doSpin(token) {
-  const daily = await getDaily(token);
-  const wheelReady = daily.data?.wheelReady;
+  const status = await getWheelStatus(token);
+  const wheelData = status.data;
 
-  if (wheelReady) {
+  // Spin daily
+  if (wheelData?.daily?.available) {
     const res = await spinWheel(token, 'daily');
     if (res.status === 200 || res.status === 201) {
       const reward = res.data?.reward;
@@ -319,14 +322,10 @@ async function doSpin(token) {
   }
 
   // Spin pake tiket kalau ada
-  const wheel = await getWheel(token);
-  // cek spin tickets dari balances
-  const balRes = await xReq('GET', '/api/me/balances', token);
-  const spinTickets = balRes.data?.balances?.find(b => b.type === 'SPIN_TICKET')?.amount || 0;
-
-  if (parseInt(spinTickets) > 0) {
+  const spinTickets = parseInt(wheelData?.tickets?.available || 0);
+  if (spinTickets > 0) {
     console.log(`  [Spin Tiket] Ada ${spinTickets} tiket`);
-    for (let i = 0; i < parseInt(spinTickets); i++) {
+    for (let i = 0; i < spinTickets; i++) {
       const res = await spinWheel(token, 'ticket');
       if (res.status === 200 || res.status === 201) {
         const reward = res.data?.reward;
@@ -411,6 +410,16 @@ async function doTasks(token, account) {
 }
 
 async function doFollowUnlock(token) {
+  const status = await getWheelStatus(token);
+  const gate = status.data?.followGate;
+  if (gate?.unlocked) {
+    console.log(`  [Follow Unlock] Sudah unlocked`);
+    return;
+  }
+  if (!gate?.enabled || !gate?.required) {
+    console.log(`  [Follow Unlock] Tidak diperlukan`);
+    return;
+  }
   const res = await followUnlock(token);
   if (res.data?.followGate?.unlocked) {
     console.log(`  [Follow Unlock] ✓ Spin gate unlocked`);
