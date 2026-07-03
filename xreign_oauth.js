@@ -66,8 +66,15 @@ async function getAuthCode(auth_token, ct0, pkce_challenge, state) {
     headers: {
       'Authorization': `Bearer ${BEARER_TOKEN}`,
       'Cookie': `auth_token=${auth_token}; ct0=${ct0};`,
-      'X-Csrf-Token': ct0, // FIX: header ini wajib ada di GET juga
-      'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36'
+      'X-Csrf-Token': ct0,
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+      'X-Twitter-Active-User': 'yes',
+      'X-Twitter-Auth-Type': 'OAuth2Session',
+      'X-Twitter-Client-Language': 'en',
+      'Referer': 'https://x.com/',
+      'Origin': 'https://x.com',
+      'Accept': '*/*',
+      'Accept-Language': 'en-US,en;q=0.9',
     }
   });
 
