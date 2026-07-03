@@ -219,7 +219,7 @@ async function getMyScreenName(account) {
   const text = await res.text();
   if (text.trim().startsWith('<')) throw new Error(`Token X invalid/expired (status: ${res.status})`);
   const data = JSON.parse(text);
-  if (!data.screen_name) throw new Error('Gagal ambil screen_name');
+  if (!data.screen_name) throw new Error(`Gagal ambil screen_name: ${JSON.stringify(data).slice(0, 150)}`);
   return data.screen_name;
 }
 
