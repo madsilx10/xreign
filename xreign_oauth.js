@@ -46,55 +46,14 @@ async function connectX(account) {
     redirect: 'manual',
   });
 
-  // Kumpulkan Set-Cookie dari step1 (dipakai di step4)
-  let setCookies = step1Res.headers.getSetCookie ? step1Res.headers.getSetCookie() : [];
-  let sessionCookie = setCookies.map(c => c.split(';')[0]).join('; ');
+  // Ambil Set-Cookie dari step1 (dipakai di step4)
+  const setCookies = step1Res.headers.getSetCookie ? step1Res.headers.getSetCookie() : [];
+  const sessionCookie = setCookies.map(c => c.split(';')[0]).join('; ');
 
-  // Ikutin redirect manual kalau ada, sambil kumpulin cookie
-  if (step1Res.status >= 300 && step1Res.status < 400) {
-    let nextUrl = step1Res.headers.get('location');
-    let hops = 0;
-    const collectedCookies = [...setCookies];
-    while (nextUrl && hops < 5) {
-      const resolved = new URL(nextUrl, BASE).toString();
-      const hopRes = await fetch(resolved, {
-        headers: {
-          'User-Agent': UA,
-          'Accept': 'application/json, text/plain, */*',
-          ...(collectedCookies.length ? { Cookie: collectedCookies.map(c => c.split(';')[0]).join('; ') } : {}),
-        },
-        redirect: 'manual',
-      });
-      const hopCookies = hopRes.headers.getSetCookie ? hopRes.headers.getSetCookie() : [];
-      collectedCookies.push(...hopCookies);
-      if (hopRes.status >= 300 && hopRes.status < 400) {
-        nextUrl = hopRes.headers.get('location');
-        hops++;
-      } else {
-        nextUrl = null;
-      }
-    }
-    setCookies = collectedCookies;
-    sessionCookie = setCookies.map(c => c.split(';')[0]).join('; ');
-  } else if (step1Res.status !== 200) {
-    throw new Error(`Step1 gagal: ${step1Res.status}`);
-  }
-
-  let step1Data;
-  const step1Text = await step1Res.clone().text();
-  console.log('  [Step1] Status: ' + step1Res.status + ', Body: ' + step1Text.substring(0, 300));
-  try {
-    step1Data = JSON.parse(step1Text);
-  } catch {
-    throw new Error('Step1: response bukan JSON. Status: ' + step1Res.status + ', Body: ' + step1Text.substring(0, 300));
-  }
-
-  if (!step1Data || !step1Data.authUrl) {
-    throw new Error(`Step1: authUrl tidak ditemukan. Response: ${JSON.stringify(step1Data).slice(0, 200)}`);
-  }
-
-  // Ambil state dari authUrl yang dikasih backend
-  const authorizeUrl = step1Data.authUrl;
+  // authUrl ada di Location header (302 redirect)
+  const authorizeUrl = step1Res.headers.get('location');
+  console.log('  [Step1] Status: ' + step1Res.status + ', authUrl: ' + (authorizeUrl || 'null'));
+  if (!authorizeUrl) throw new Error('Step1: tidak ada Location header di response');
   const authorizeUrlObj = new URL(authorizeUrl);
   const state = authorizeUrlObj.searchParams.get('state');
 
