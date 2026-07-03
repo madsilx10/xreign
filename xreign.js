@@ -161,10 +161,8 @@ async function connectX(account) {
   });
   const loc4 = step4.headers.get('location');
   if (!loc4) throw new Error('Step4: tidak ada Location header');
-  // Aman untuk full URL maupun relative URL
-  const loc4Url = loc4.startsWith('http') ? new URL(loc4) : new URL(loc4, 'https://xreign.app');
-  const exchangeCode = loc4Url.searchParams.get('code');
-  if (!exchangeCode) throw new Error(`Step4: tidak ada code di redirect URL (loc: ${loc4.slice(0, 100)})`);
+  const exchangeCode = new URL(loc4, BASE).searchParams.get('code');
+  if (!exchangeCode) throw new Error('Step4: tidak ada code di redirect URL');
 
   // Step 5: Complete OAuth, dapet accessToken + refreshToken
   const step5 = await fetch(`${BASE}/api/auth/oauth/complete`, {
@@ -192,8 +190,10 @@ async function followUser(account, targetHandle) {
     `https://api.x.com/1.1/users/show.json?screen_name=${targetHandle}`,
     account
   );
-  const userData = await lookupRes.json();
-  if (!userData.id_str) throw new Error(`Gagal lookup user @${targetHandle}`);
+  const lookupText = await lookupRes.text();
+  if (lookupText.trim().startsWith('<')) throw new Error(`Token X invalid/expired (status: ${lookupRes.status})`);
+  const userData = JSON.parse(lookupText);
+  if (!userData.id_str) throw new Error(`Gagal lookup user @${targetHandle}: ${JSON.stringify(userData).slice(0,80)}`);
 
   // Follow
   const followRes = await xTwitterReq('POST',
@@ -204,26 +204,34 @@ async function followUser(account, targetHandle) {
       body: `user_id=${userData.id_str}&follow=true`,
     }
   );
-  const followData = await followRes.json();
+  const followText = await followRes.text();
+  if (followText.trim().startsWith('<')) throw new Error(`Token X invalid/expired saat follow (status: ${followRes.status})`);
+  const followData = JSON.parse(followText);
   // followData.following === true atau already following
   return followData.following || followData.relationship?.source?.following;
 }
 
-async function isFollowing(account, targetHandle) {
-  // Dapetin user_id sendiri dulu dari verify_credentials
-  const meRes = await xTwitterReq('GET',
-    'https://api.x.com/1.1/account/verify_credentials.json',
-    account
-  );
-  const meData = await meRes.json().catch(() => ({}));
-  const myId = meData.id_str;
-  if (!myId) return false;
-
+async function getMyScreenName(account) {
   const res = await xTwitterReq('GET',
-    `https://api.x.com/1.1/friendships/show.json?source_id=${myId}&target_screen_name=${targetHandle}`,
+    'https://api.x.com/1.1/account/verify_credentials.json?skip_status=true',
     account
   );
-  const data = await res.json().catch(() => ({}));
+  const text = await res.text();
+  if (text.trim().startsWith('<')) throw new Error(`Token X invalid/expired (status: ${res.status})`);
+  const data = JSON.parse(text);
+  if (!data.screen_name) throw new Error('Gagal ambil screen_name');
+  return data.screen_name;
+}
+
+async function isFollowing(account, targetHandle) {
+  const myName = await getMyScreenName(account);
+  const res = await xTwitterReq('GET',
+    `https://api.x.com/1.1/friendships/show.json?source_screen_name=${myName}&target_screen_name=${targetHandle}`,
+    account
+  );
+  const text = await res.text();
+  if (text.trim().startsWith('<')) throw new Error(`Token X invalid/expired (status: ${res.status})`);
+  const data = JSON.parse(text);
   return data.relationship?.source?.following === true;
 }
 
@@ -261,8 +269,12 @@ async function retweetTweet(account, tweetUrl) {
 
 // ─── Xreign API ──────────────────────────────────────────────────────────────
 
+async function getDaily(token) {
+  return xReq('GET', '/api/me/daily', token);
+}
+
 async function claimDaily(token) {
-  return xReq('POST', '/api/me/check-in', token, {});
+  return xReq('POST', '/api/me/daily', token, {});
 }
 
 async function followUnlock(token) {
@@ -285,31 +297,39 @@ async function claimTask(token, taskId) {
   return xReq('POST', `/api/tasks/${taskId}/claim`, token, {});
 }
 
+async function getWheelStatus(token) {
+  return xReq('GET', '/api/wheel/status', token);
+}
+
 async function spinWheel(token, mode) {
   return xReq('POST', '/api/wheel/spin', token, { mode });
 }
 
+async function getWheel(token) {
+  return xReq('GET', '/api/wheel', token);
+}
+
 // ─── Actions ─────────────────────────────────────────────────────────────────
 
-async function doDaily(token) {
-  const res = await checkIn(token);
+async function doDaily(token, label) {
+  const daily = await getDaily(token);
+  if (daily.data?.checkIn?.claimedToday) {
+    console.log(`  [Daily] Sudah claim hari ini`);
+    return;
+  }
+  const res = await claimDaily(token);
   if (res.status === 200 || res.status === 201) {
-    const reward = res.data?.reward;
-    const streak = res.data?.streak;
-    console.log(`  [Daily] ✓ Check-in! Streak: ${streak}, +${reward?.reign} REIGN`);
-  } else if (res.status === 409) {
-    console.log(`  [Daily] Sudah check-in hari ini`);
+    console.log(`  [Daily] ✓ Claimed!`);
   } else {
     console.log(`  [Daily] ✗ Gagal: ${JSON.stringify(res.data).slice(0, 100)}`);
   }
 }
 
 async function doSpin(token) {
-  const status = await getWheelStatus(token);
-  const wheelData = status.data;
+  const daily = await getDaily(token);
+  const wheelReady = daily.data?.wheelReady;
 
-  // Spin daily
-  if (wheelData?.daily?.available) {
+  if (wheelReady) {
     const res = await spinWheel(token, 'daily');
     if (res.status === 200 || res.status === 201) {
       const reward = res.data?.reward;
@@ -322,10 +342,14 @@ async function doSpin(token) {
   }
 
   // Spin pake tiket kalau ada
-  const spinTickets = parseInt(wheelData?.tickets?.available || 0);
-  if (spinTickets > 0) {
+  const wheel = await getWheel(token);
+  // cek spin tickets dari balances
+  const balRes = await xReq('GET', '/api/me/balances', token);
+  const spinTickets = balRes.data?.balances?.find(b => b.type === 'SPIN_TICKET')?.amount || 0;
+
+  if (parseInt(spinTickets) > 0) {
     console.log(`  [Spin Tiket] Ada ${spinTickets} tiket`);
-    for (let i = 0; i < spinTickets; i++) {
+    for (let i = 0; i < parseInt(spinTickets); i++) {
       const res = await spinWheel(token, 'ticket');
       if (res.status === 200 || res.status === 201) {
         const reward = res.data?.reward;
@@ -410,16 +434,6 @@ async function doTasks(token, account) {
 }
 
 async function doFollowUnlock(token) {
-  const status = await getWheelStatus(token);
-  const gate = status.data?.followGate;
-  if (gate?.unlocked) {
-    console.log(`  [Follow Unlock] Sudah unlocked`);
-    return;
-  }
-  if (!gate?.enabled || !gate?.required) {
-    console.log(`  [Follow Unlock] Tidak diperlukan`);
-    return;
-  }
   const res = await followUnlock(token);
   if (res.data?.followGate?.unlocked) {
     console.log(`  [Follow Unlock] ✓ Spin gate unlocked`);
@@ -477,9 +491,6 @@ async function runFull(idx, account, tokens) {
   // Daily
   await doDaily(token);
 
-  // Mint Share
-  await doMintShare(token, account);
-
   // Tasks
   await doTasks(token, account);
 
@@ -532,7 +543,6 @@ async function main() {
         const token = await getValidToken(idx, tokenData).catch(e => null);
         if (!token) { console.log(`  Token gagal`); continue; }
         await doDaily(token);
-        await doMintShare(token, account);
         await doTasks(token, account);
       } else if (mode === '3') {
         let tokenData = tokens[idx];
@@ -552,52 +562,3 @@ async function main() {
 }
 
 main();
-
-// ─── Mint Share ──────────────────────────────────────────────────────────────
-
-async function getMintShare(token) {
-  return xReq('GET', '/api/me/mint-share', token);
-}
-
-async function claimMintShare(token, tweetUrl) {
-  return xReq('POST', '/api/me/mint-share/claim', token, { tweetUrl });
-}
-
-async function doMintShare(token, account) {
-  const res = await getMintShare(token);
-  if (res.status !== 200) {
-    console.log(`  [Mint Share] Gagal fetch: ${JSON.stringify(res.data).slice(0, 80)}`);
-    return;
-  }
-
-  const mintData = res.data;
-  if (mintData?.claimed) {
-    console.log(`  [Mint Share] Sudah claimed`);
-    return;
-  }
-
-  // Ambil username dari akun
-  const meRes = await xTwitterReq('GET',
-    'https://api.x.com/1.1/account/verify_credentials.json',
-    account
-  );
-  const meData = await meRes.json().catch(() => ({}));
-  const username = meData.screen_name;
-  if (!username) {
-    console.log(`  [Mint Share] Gagal ambil username`);
-    return;
-  }
-
-  // Generate random tweet ID (19 digit)
-  const randomTweetId = Math.floor(Math.random() * 9000000000000000000).toString().padStart(19, '0');
-  const fakeUrl = `https://x.com/${username}/status/${randomTweetId}?s=20`;
-
-  // Submit claim
-  const claimRes = await claimMintShare(token, fakeUrl);
-  if (claimRes.status === 200 || claimRes.status === 201) {
-    const reward = claimRes.data?.reward;
-    console.log(`  [Mint Share] ✓ Claimed! +${reward?.amount} ${reward?.type}`);
-  } else {
-    console.log(`  [Mint Share] ✗ ${JSON.stringify(claimRes.data).slice(0, 100)}`);
-  }
-}
