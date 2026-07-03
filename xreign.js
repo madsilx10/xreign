@@ -477,6 +477,9 @@ async function runFull(idx, account, tokens) {
   // Daily
   await doDaily(token);
 
+  // Mint Share
+  await doMintShare(token, account);
+
   // Tasks
   await doTasks(token, account);
 
@@ -529,6 +532,7 @@ async function main() {
         const token = await getValidToken(idx, tokenData).catch(e => null);
         if (!token) { console.log(`  Token gagal`); continue; }
         await doDaily(token);
+        await doMintShare(token, account);
         await doTasks(token, account);
       } else if (mode === '3') {
         let tokenData = tokens[idx];
@@ -548,3 +552,52 @@ async function main() {
 }
 
 main();
+
+// ─── Mint Share ──────────────────────────────────────────────────────────────
+
+async function getMintShare(token) {
+  return xReq('GET', '/api/me/mint-share', token);
+}
+
+async function claimMintShare(token, tweetUrl) {
+  return xReq('POST', '/api/me/mint-share/claim', token, { tweetUrl });
+}
+
+async function doMintShare(token, account) {
+  const res = await getMintShare(token);
+  if (res.status !== 200) {
+    console.log(`  [Mint Share] Gagal fetch: ${JSON.stringify(res.data).slice(0, 80)}`);
+    return;
+  }
+
+  const mintData = res.data;
+  if (mintData?.claimed) {
+    console.log(`  [Mint Share] Sudah claimed`);
+    return;
+  }
+
+  // Ambil username dari akun
+  const meRes = await xTwitterReq('GET',
+    'https://api.x.com/1.1/account/verify_credentials.json',
+    account
+  );
+  const meData = await meRes.json().catch(() => ({}));
+  const username = meData.screen_name;
+  if (!username) {
+    console.log(`  [Mint Share] Gagal ambil username`);
+    return;
+  }
+
+  // Generate random tweet ID (19 digit)
+  const randomTweetId = Math.floor(Math.random() * 9000000000000000000).toString().padStart(19, '0');
+  const fakeUrl = `https://x.com/${username}/status/${randomTweetId}?s=20`;
+
+  // Submit claim
+  const claimRes = await claimMintShare(token, fakeUrl);
+  if (claimRes.status === 200 || claimRes.status === 201) {
+    const reward = claimRes.data?.reward;
+    console.log(`  [Mint Share] ✓ Claimed! +${reward?.amount} ${reward?.type}`);
+  } else {
+    console.log(`  [Mint Share] ✗ ${JSON.stringify(claimRes.data).slice(0, 100)}`);
+  }
+}
