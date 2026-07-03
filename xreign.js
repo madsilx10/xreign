@@ -207,33 +207,11 @@ async function followUser(account, targetHandle) {
   const followText = await followRes.text();
   if (followText.trim().startsWith('<')) throw new Error(`Token X invalid/expired saat follow (status: ${followRes.status})`);
   const followData = JSON.parse(followText);
-  // followData.following === true atau already following
-  return followData.following || followData.relationship?.source?.following;
+  const alreadyFollowing = followData.errors?.[0]?.code === 327;
+  return followData.following || alreadyFollowing || followData.relationship?.source?.following;
 }
 
-async function getMyScreenName(account) {
-  const res = await xTwitterReq('GET',
-    'https://api.x.com/1.1/account/verify_credentials.json?skip_status=true',
-    account
-  );
-  const text = await res.text();
-  if (text.trim().startsWith('<')) throw new Error(`Token X invalid/expired (status: ${res.status})`);
-  const data = JSON.parse(text);
-  if (!data.screen_name) throw new Error(`Gagal ambil screen_name: ${JSON.stringify(data).slice(0, 150)}`);
-  return data.screen_name;
-}
 
-async function isFollowing(account, targetHandle) {
-  const myName = await getMyScreenName(account);
-  const res = await xTwitterReq('GET',
-    `https://api.x.com/1.1/friendships/show.json?source_screen_name=${myName}&target_screen_name=${targetHandle}`,
-    account
-  );
-  const text = await res.text();
-  if (text.trim().startsWith('<')) throw new Error(`Token X invalid/expired (status: ${res.status})`);
-  const data = JSON.parse(text);
-  return data.relationship?.source?.following === true;
-}
 
 // ─── Like & Repost ───────────────────────────────────────────────────────────
 
@@ -385,12 +363,9 @@ async function doTasks(token, account) {
       if (vtype === 'x_follow' && account) {
         const handle = task.verification?.config?.xTargetHandle;
         if (handle) {
-          const alreadyFollowing = await isFollowing(account, handle).catch(() => false);
-          if (!alreadyFollowing) {
-            await followUser(account, handle);
-            console.log(`  [Task] Follow @${handle} ✓`);
-            await sleep(1500);
-          }
+          await followUser(account, handle).catch(() => {});
+          console.log(`  [Task] Follow @${handle} ✓`);
+          await sleep(1500);
         }
       }
 
@@ -472,14 +447,13 @@ async function runFull(idx, account, tokens) {
   console.log(`  [Follow X] Mengecek follow status...`);
   for (const handle of ['xreign_app', 'orvexhub']) {
     try {
-      const already = await isFollowing(account, handle);
-      if (already) {
-        console.log(`  [Follow X] @${handle} sudah difollow`);
+      const followed = await followUser(account, handle);
+      if (followed) {
+        console.log(`  [Follow X] ✓ @${handle} followed (atau sudah follow)`);
       } else {
-        await followUser(account, handle);
-        console.log(`  [Follow X] ✓ Follow @${handle}`);
-        await sleep(1500);
+        console.log(`  [Follow X] @${handle} follow mungkin gagal, lanjut`);
       }
+      await sleep(1500);
     } catch (e) {
       console.log(`  [Follow X] @${handle} error: ${e.message}`);
     }
