@@ -116,7 +116,7 @@ async function connectX(account) {
       'Referer': `https://xreign.app/`,
       ...(sessionCookie ? { Cookie: sessionCookie } : {}),
     },
-    redirect: 'follow',
+    redirect: 'manual',
   });
   const step4Text = await step4Res.text();
   console.log(`  [Step4] Status: ${step4Res.status}, URL: ${step4Res.url}`);
