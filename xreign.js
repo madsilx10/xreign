@@ -230,6 +230,19 @@ async function followUser(account, targetHandle) {
 
 
 
+async function checkFollowing(account, screenName) {
+  const res = await xTwitterReq('GET',
+    `https://api.x.com/1.1/friendships/lookup.json?screen_name=${screenName}`,
+    account
+  );
+  const text = await res.text();
+  if (text.trim().startsWith('<')) return false;
+  try {
+    const data = JSON.parse(text);
+    return (data?.[0]?.connections || []).includes('following');
+  } catch { return false; }
+}
+
 // ─── Like & Repost ───────────────────────────────────────────────────────────
 
 async function likeTweet(account, tweetUrl) {
@@ -302,6 +315,14 @@ async function spinWheel(token, mode) {
 
 async function getWheel(token) {
   return xReq('GET', '/api/wheel', token);
+}
+
+async function getSignal(token) {
+  return xReq('GET', '/api/signal', token);
+}
+
+async function voteSignal(token, choiceId) {
+  return xReq('POST', '/api/signal/vote', token, { choiceId });
 }
 
 // ─── Actions ─────────────────────────────────────────────────────────────────
@@ -467,9 +488,14 @@ async function runFull(idx, account, tokens) {
   console.log(`  [Follow X] Mengecek follow status...`);
   for (const handle of ['xreign_app', 'orvexhub']) {
     try {
+      const alreadyFollowing = await checkFollowing(account, handle);
+      if (alreadyFollowing) {
+        console.log(`  [Follow X] @${handle} sudah follow, skip`);
+        continue;
+      }
       const followed = await followUser(account, handle);
       if (followed) {
-        console.log(`  [Follow X] ✓ @${handle} followed (atau sudah follow)`);
+        console.log(`  [Follow X] ✓ @${handle} followed`);
       } else {
         console.log(`  [Follow X] @${handle} follow mungkin gagal, lanjut`);
       }
@@ -495,8 +521,6 @@ async function runFull(idx, account, tokens) {
   await sleep(2000);
   await doMintShare(token, account);
 
-  // Spin
-  await doSpin(token);
 }
 
 // ─── Mint Share ──────────────────────────────────────────────────────────────
@@ -541,6 +565,33 @@ async function doMintShare(token, account) {
   }
 }
 
+async function doSignal(token) {
+  const res = await getSignal(token);
+  if (res.status !== 200) {
+    console.log(`  [Signal] Gagal fetch: ${JSON.stringify(res.data).slice(0, 80)}`);
+    return;
+  }
+  if (res.data?.userVote?.choiceId) {
+    console.log(`  [Signal] Sudah vote round ini: ${res.data.userVote.choiceId}`);
+    return;
+  }
+  if (!res.data?.round?.votingOpen) {
+    console.log(`  [Signal] Voting sedang tutup`);
+    return;
+  }
+  const choices = res.data?.choices || [];
+  if (!choices.length) { console.log(`  [Signal] Tidak ada choices`); return; }
+
+  const pick = choices[Math.floor(Math.random() * choices.length)];
+  const vRes = await voteSignal(token, pick.id);
+  if (vRes.status === 200 || vRes.status === 201) {
+    const reward = vRes.data?.userVote?.rewardAmount;
+    console.log(`  [Signal] ✓ Vote "${pick.title}" (${pick.id}) → +${reward} REIGN`);
+  } else {
+    console.log(`  [Signal] ✗ ${JSON.stringify(vRes.data).slice(0, 100)}`);
+  }
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -549,11 +600,6 @@ async function main() {
   console.log(`\n✓ Loaded ${accounts.length} accounts\n`);
 
   console.log('=== XREIGN BOT ===');
-  console.log('1. Full  (connect → follow → daily → task → spin)');
-  console.log('2. Daily (daily + task)');
-  console.log('3. Spin  (spin daily + tiket)\n');
-  const mode = await prompt('Mode (1/2/3): ');
-
   console.log('\n1. Satu akun');
   console.log('2. Semua akun');
   console.log('3. Range akun\n');
@@ -570,6 +616,12 @@ async function main() {
     const to = parseInt(await prompt(`To (1-${accounts.length}): `)) - 1;
     targetIndices = Array.from({ length: to - from + 1 }, (_, i) => from + i);
   }
+
+  console.log('\n1. Full  (connect → follow → daily → task → spin)');
+  console.log('2. Daily (daily + task)');
+  console.log('3. Spin  (spin daily + tiket)');
+  console.log('4. Signal (vote random)\n');
+  const mode = await prompt('Mode (1/2/3/4): ');
 
   console.log(`\n→ Processing ${targetIndices.length} account(s)\n`);
 
@@ -593,6 +645,12 @@ async function main() {
         const token = await getValidToken(idx, tokenData).catch(e => null);
         if (!token) { console.log(`  Token gagal`); continue; }
         await doSpin(token);
+      } else if (mode === '4') {
+        let tokenData = tokens[idx];
+        if (!tokenData?.accessToken) { console.log(`  Belum connect, skip`); continue; }
+        const token = await getValidToken(idx, tokenData).catch(e => null);
+        if (!token) { console.log(`  Token gagal`); continue; }
+        await doSignal(token);
       }
     } catch (err) {
       console.log(`  ✗ Error: ${err.message}`);
